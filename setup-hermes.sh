@@ -342,6 +342,67 @@ else
 fi
 
 # ============================================================================
+# Hermes config — default to NCHC so a fresh install works with zero manual
+# YAML editing (just set NCHC_API_KEY). Never touches an existing config.yaml.
+# ============================================================================
+
+HERMES_CONFIG_DIR="${HERMES_HOME:-$HOME/.hermes}"
+HERMES_CONFIG_FILE="$HERMES_CONFIG_DIR/config.yaml"
+
+if [ ! -f "$HERMES_CONFIG_FILE" ]; then
+    mkdir -p "$HERMES_CONFIG_DIR"
+    cat > "$HERMES_CONFIG_FILE" <<'YAML'
+model:
+  default: Devstral-2-123B-Instruct-2512
+  provider: nchc
+
+providers:
+  nchc:
+    base_url: https://portal.genai.nchc.org.tw/api/v1
+    key_env: NCHC_API_KEY
+YAML
+    echo -e "${GREEN}✓${NC} Created $HERMES_CONFIG_FILE (NCHC set as default provider)"
+else
+    echo -e "${GREEN}✓${NC} $HERMES_CONFIG_FILE already exists — leaving your provider settings as-is"
+fi
+
+# Whether NCHC is the active provider right now — true whether we just wrote
+# it above or it was already there from a previous run. Used below to decide
+# whether it's safe to offer the generic setup wizard (it isn't: the wizard
+# can't tell NCHC is already configured and defaults to Nous Portal OAuth).
+NCHC_IS_ACTIVE_PROVIDER=false
+if [ -f "$HERMES_CONFIG_FILE" ] && grep -qE '^[[:space:]]*provider:[[:space:]]*"?nchc"?[[:space:]]*$' "$HERMES_CONFIG_FILE" 2>/dev/null; then
+    NCHC_IS_ACTIVE_PROVIDER=true
+fi
+
+# ============================================================================
+# Sync NCHC_API_KEY into the .env Hermes actually reads.
+#
+# Hermes reads API keys from $HERMES_HOME/.env (get_env_path() in
+# hermes_cli/config.py), NOT this repo's own .env — the repo-root .env
+# created above is a convenience copy only. Without this step, a user who
+# follows the README (fill in NCHC_API_KEY in the repo-root .env) gets a
+# silent 401 from NCHC because Hermes never sees the key.
+# ============================================================================
+
+if [ -f ".env" ]; then
+    NCHC_KEY_VALUE=$(grep '^NCHC_API_KEY=' .env 2>/dev/null | head -1 | cut -d= -f2-)
+    if [ -n "$NCHC_KEY_VALUE" ] && [ "$NCHC_KEY_VALUE" != "your-nchc-api-key-here" ]; then
+        HERMES_ENV_FILE="$HERMES_CONFIG_DIR/.env"
+        mkdir -p "$HERMES_CONFIG_DIR"
+        touch "$HERMES_ENV_FILE"
+        if grep -q '^NCHC_API_KEY=' "$HERMES_ENV_FILE" 2>/dev/null; then
+            sed -i.bak "s|^NCHC_API_KEY=.*|NCHC_API_KEY=$NCHC_KEY_VALUE|" "$HERMES_ENV_FILE" 2>/dev/null \
+                && rm -f "$HERMES_ENV_FILE.bak"
+        else
+            echo "NCHC_API_KEY=$NCHC_KEY_VALUE" >> "$HERMES_ENV_FILE"
+        fi
+        chmod 600 "$HERMES_ENV_FILE" 2>/dev/null || true
+        echo -e "${GREEN}✓${NC} Synced NCHC_API_KEY into $HERMES_ENV_FILE (the .env Hermes actually reads)"
+    fi
+fi
+
+# ============================================================================
 # PATH setup — symlink hermes into a user-facing bin dir
 # ============================================================================
 
@@ -421,42 +482,84 @@ fi
 echo ""
 echo -e "${GREEN}✓ Setup complete!${NC}"
 echo ""
-echo "Next steps:"
-echo ""
-if is_termux; then
-    echo "  1. Run the setup wizard to configure API keys:"
-    echo "     hermes setup"
-    echo ""
-    echo "  2. Start chatting:"
-    echo "     hermes"
-    echo ""
-else
-    echo "  1. Reload your shell:"
-    echo "     source $SHELL_CONFIG"
-    echo ""
-    echo "  2. Run the setup wizard to configure API keys:"
-    echo "     hermes setup"
-    echo ""
-    echo "  3. Start chatting:"
-    echo "     hermes"
-    echo ""
-fi
-echo "Other commands:"
-echo "  hermes status        # Check configuration"
-if is_termux; then
-    echo "  hermes gateway       # Run gateway in foreground"
-else
-    echo "  hermes gateway install # Install gateway service (messaging + cron)"
-fi
-echo "  hermes cron list     # View scheduled jobs"
-echo "  hermes doctor        # Diagnose issues"
-echo ""
 
-# Ask if they want to run setup wizard now
-read -p "Would you like to run the setup wizard now? [Y/n] " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+if [ "$NCHC_IS_ACTIVE_PROVIDER" = true ]; then
+    echo "NCHC GenAI Portal is already configured as your model provider."
     echo ""
-    # Run directly with venv Python (no activation needed)
-    "$SCRIPT_DIR/venv/bin/python" -m hermes_cli.main setup
+    echo "Next steps:"
+    echo ""
+    if is_termux; then
+        echo "  1. Make sure NCHC_API_KEY is set in .env (see README)."
+        echo "  2. Start chatting:"
+        echo "     hermes"
+        echo ""
+    else
+        echo "  1. Reload your shell:"
+        echo "     source $SHELL_CONFIG"
+        echo ""
+        echo "  2. Make sure NCHC_API_KEY is set in .env (see README)."
+        echo "  3. Start chatting:"
+        echo "     hermes"
+        echo ""
+    fi
+    echo "Other commands:"
+    echo "  hermes model          # Switch between NCHC models"
+    echo "  hermes status         # Check configuration"
+    if is_termux; then
+        echo "  hermes gateway       # Run gateway in foreground"
+    else
+        echo "  hermes gateway install # Install gateway service (messaging + cron)"
+    fi
+    echo "  hermes cron list     # View scheduled jobs"
+    echo "  hermes doctor        # Diagnose issues"
+    echo ""
+    echo -e "${YELLOW}⚠${NC} Do NOT run the bare 'hermes setup' wizard — its first-run default"
+    echo "   is 'Quick Setup (Nous Portal)', which will silently replace your NCHC"
+    echo "   provider with a Nous Portal OAuth login. To reconfigure specific"
+    echo "   things instead, use 'hermes model', 'hermes setup gateway', or"
+    echo "   'hermes setup tools'."
+    echo ""
+else
+    echo "Next steps:"
+    echo ""
+    if is_termux; then
+        echo "  1. Run the setup wizard to configure API keys:"
+        echo "     hermes setup"
+        echo ""
+        echo "  2. Start chatting:"
+        echo "     hermes"
+        echo ""
+    else
+        echo "  1. Reload your shell:"
+        echo "     source $SHELL_CONFIG"
+        echo ""
+        echo "  2. Run the setup wizard to configure API keys:"
+        echo "     hermes setup"
+        echo ""
+        echo "  3. Start chatting:"
+        echo "     hermes"
+        echo ""
+    fi
+    echo "Other commands:"
+    echo "  hermes status        # Check configuration"
+    if is_termux; then
+        echo "  hermes gateway       # Run gateway in foreground"
+    else
+        echo "  hermes gateway install # Install gateway service (messaging + cron)"
+    fi
+    echo "  hermes cron list     # View scheduled jobs"
+    echo "  hermes doctor        # Diagnose issues"
+    echo ""
+
+    # Ask if they want to run setup wizard now — only offered when we did NOT
+    # just seed an NCHC config, since running the wizard on a fresh NCHC setup
+    # would clobber it with the "Quick Setup (Nous Portal)" default (see #57315-style
+    # first-run behavior in hermes_cli/setup.py).
+    read -p "Would you like to run the setup wizard now? [Y/n] " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]] || [[ -z $REPLY ]]; then
+        echo ""
+        # Run directly with venv Python (no activation needed)
+        "$SCRIPT_DIR/venv/bin/python" -m hermes_cli.main setup
+    fi
 fi
